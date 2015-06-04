@@ -23,6 +23,7 @@
 #include "md5.h"
 #include "osp2p.h"
 
+#include <sys/wait.h>
 int evil_mode;			// nonzero iff this peer should behave badly
 
 static struct in_addr listen_addr;	// Define listening endpoint
@@ -35,7 +36,7 @@ static int listen_port;
  * a bounded buffer that simplifies reading from and writing to peers.
  */
 
-#define TASKBUFSIZ	4096	// Size of task_t::buf
+#define TASKBUFSIZ	20000	// Size of task_t::buf
 #define FILENAMESIZ	256	// Size of task_t::filename
 
 typedef enum tasktype {		// Which type of connection is this?
@@ -476,7 +477,8 @@ task_t *start_download(task_t *tracker_task, const char *filename)
 		error("* Error while allocating task");
 		goto exit;
 	}
-	strcpy(t->filename, filename);
+	strncpy(t->filename, filename, FILENAMESIZ-1);
+	t->filename[FILENAMESIZ-1] = '\0';
 
 	// add peers
 	s1 = tracker_task->buf;
@@ -532,8 +534,10 @@ static void task_download(task_t *t, task_t *tracker_task)
 	// "foo.txt~1~".  However, if there are 50 local files, don't download
 	// at all.
 	for (i = 0; i < 50; i++) {
-		if (i == 0)
-			strcpy(t->disk_filename, t->filename);
+		if (i == 0){
+			strncpy(t->disk_filename, t->filename, FILENAMESIZ-1);
+			t->filename[FILENAMESIZ-1] = '\0';
+		}
 		else
 			sprintf(t->disk_filename, "%s~%d~", t->filename, i);
 		t->disk_fd = open(t->disk_filename,
@@ -649,6 +653,40 @@ static void task_upload(task_t *t)
 	}
 	t->head = t->tail = 0;
 
+	
+	char cur_dir_buf[PATH_MAX+1];
+	char file_path_buf[PATH_MAX+1];
+	char* cur_dir = getcwd(cur_dir_buf, PATH_MAX + 1); // get current dir
+	char* file_path = realpath(t->filename, file_path_buf);
+	
+	// check if paths are correct and files exist
+	if (cur_dir == NULL) {
+		errno = ENOENT;
+		error("Error: Invalid current directory\n");
+		goto exit;
+	}
+	if (file_path == NULL) {
+		errno = ENOENT;
+		error("Error: Invalid file path\n");
+		goto exit;
+	}
+	
+	// check if file exist
+	struct stat data;
+	if (stat(file_path, &data) < 0) {
+		errno = ENOENT;
+		error("Error: File does not exist\n");
+		goto exit;
+	}
+	
+	// check if file is in current directory
+	if (strncmp(cur_dir, file_path, strlen(cur_dir))) {
+		errno = ENOENT;
+		error("Error: File not in current directory, access not granted\n");
+		goto exit;
+	} 
+
+
 	t->disk_fd = open(t->filename, O_RDONLY);
 	if (t->disk_fd == -1) {
 		error("* Cannot open file %s", t->filename);
@@ -759,13 +797,46 @@ int main(int argc, char *argv[])
 	register_files(tracker_task, myalias);
 
 	// First, download files named on command line.
-	for (; argc > 1; argc--, argv++)
-		if ((t = start_download(tracker_task, argv[1])))
-			task_download(t, tracker_task);
+	int count = 0;
+	for (; argc>1 && !evil_mode; argc--, argv++){
+		if ((t=start_download(tracker_task, argv[1]))){ // will return list of peers for that task
+			pid_t pid;
+			if ((pid = fork()) < 0){
+				error ("error msg");
+				continue;
+			}
+			if(pid == 0){
+				task_download(t, tracker_task);
+				exit(0);
+			}
+			else{
+				count++; //count the number of processes created
+				task_free(t); //don't need to be doing anything here
+			}
+		}
+	}
+
+	// Then, wait until all downloads finish
+	while (count > 0){
+		waitpid(-1, NULL, 0); //-1 for any process, 0 for blocking
+		count --;
+	}
 
 	// Then accept connections from other peers and upload files to them!
-	while ((t = task_listen(listen_task)))
-		task_upload(t);
-
+	while((t=task_listen(listen_task))){
+		pid_t pid;
+		waitpid(-1, NULL, WNOHANG); //Polling, in case if there are too many tasks
+		if((pid=fork()) < 0){
+			error("some error msg");
+			continue;
+		}
+		if(pid == 0){
+			task_upload(t);
+			exit(0);
+		}
+		else{
+			task_free(t);
+		}
+	}
 	return 0;
 }
