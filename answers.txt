@@ -29,6 +29,8 @@ The waitpid function was also used to ensure synchronization.
 
 # EXERCISE 2A: What conditions did you find and fix that would have
 #    triggered a buffer overrun bug?  (~1-3 sentences each)
+Changed strcpy() in task_download and start_download()
+
 
 # EXERCISE 2B: What other robustness problems did you fix?  (~1-3 sentences
 #    each)
@@ -42,13 +44,24 @@ We checked if the files and directories the peer is asking for exist. If not, th
 3. Checking for location of file (current directory or not)
 We checked if the file peer asked for is in the current directory. If not, then return an error message saying access not granted. 
 
-4. 
+4. Checking for the size of the file being downloaded
+Bad peers may continously send data to fill up our memory, hence there is a cap on the maximum file size
 
+5. Check if file name length for upload and download
+Same as above, make sure the filename's length is smaller than the maximum file size
 
-
+6. Check if a peer is taking too much time
+Bad peers may be too slow on purpose, output an error message if it's too slow.
 
 # EXERCISE 3: Describe the attacks you implemented for "evil mode".  Why
 #    are they attacks?  (~3-10 sentences each)
+
+Evil Mode 1:
+In task_upload(), uploading a file called "virus" in the parent directory will exploit the downloader without even noticing the attack. 
+If they don't have good implementation to confirm the filename, then we can just upload a virus file located somewhere in the host computer. 
+
+Evil Mode 2:
+In task_upload(), causing a disk overrun as data is continously uploaded to the peer.
 
 # Extra credit problems
 #Extra credit problem: none
